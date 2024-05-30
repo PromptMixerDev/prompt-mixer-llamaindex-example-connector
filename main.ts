@@ -137,16 +137,18 @@ async function readFileByStreams(url: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let data = '';
 
-		let readableStream = fs.createReadStream(url, {
+		const readableStream = fs.createReadStream(url, {
 			encoding: ENCODING,
 		});
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		readableStream.on('error', (err: any) => {
 			reject(`There was an error reading the file: ${err.message}`);
 		});
 
-		let lineReader = readline.createInterface({ input: readableStream });
+		const lineReader = readline.createInterface({ input: readableStream });
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		lineReader.on('line', (line: any) => {
 			data += line + '\n';
 		});
@@ -257,80 +259,77 @@ async function main(
 	properties: Record<string, unknown>,
 	settings: Record<string, unknown>,
 ): Promise<ConnectorResponse | undefined> {
+	const total = prompts.length;
+	const { prompt, ...restProperties } = properties;
+	const systemPrompt = (prompt ||
+		config.properties.find((prop) => prop.id === 'prompt')?.value) as string;
+	const messageHistory: ChatMessage[] = [
+		{ role: 'system', content: [{ type: 'text', text: systemPrompt }] },
+	];
+	const outputs: Array<Message | ErrorCompletion> = [];
+
+	const llm = new OpenAI({
+		model,
+		additionalChatOptions: { ...restProperties },
+		apiKey: settings?.['API_KEY'] as string,
+	});
+
 	try {
-		const total = prompts.length;
-		const { prompt, ...restProperties } = properties;
-		const systemPrompt = (prompt ||
-			config.properties.find((prop) => prop.id === 'prompt')?.value) as string;
-		const messageHistory: ChatMessage[] = [
-			{ role: 'system', content: [{ type: 'text', text: systemPrompt }] },
-		];
-		const outputs: Array<Message | ErrorCompletion> = [];
+		for (let index = 0; index < total; index++) {
+			try {
+				const userPrompt = prompts[index];
+				const docUrls = extractDocumentUrls(userPrompt);
+				const messageContent: ChatMessage['content'] = [
+					{ type: 'text', text: userPrompt },
+				];
 
-		const llm = new OpenAI({
-			model,
-			additionalChatOptions: { ...restProperties },
-			apiKey: settings?.['API_KEY'] as string,
-		});
-
-		try {
-			for (let index = 0; index < total; index++) {
-				try {
-					const userPrompt = prompts[index];
-					const docUrls = extractDocumentUrls(userPrompt);
-					const messageContent: ChatMessage['content'] = [
-						{ type: 'text', text: userPrompt },
-					];
-
-					for await (const docUrl of docUrls) {
-						try {
-							const documents = await parseDocument(docUrl);
-							if (Array.isArray(documents)) {
-								documents.forEach(async (doc) => {
-									await updateHistory(
-										messageHistory,
-										messageContent,
-										doc,
-										userPrompt,
-									);
-								});
-							} else {
+				for await (const docUrl of docUrls) {
+					try {
+						const documents = await parseDocument(docUrl);
+						if (Array.isArray(documents)) {
+							documents.forEach(async (doc) => {
 								await updateHistory(
 									messageHistory,
 									messageContent,
-									documents,
+									doc,
 									userPrompt,
 								);
-							}
-						} catch (error) {
-							console.log(error);
+							});
+						} else {
+							await updateHistory(
+								messageHistory,
+								messageContent,
+								documents,
+								userPrompt,
+							);
 						}
+					} catch (error) {
+						console.log(error);
 					}
-
-					logger(messageHistory);
-
-					const response: Message = await llm.chat({
-						messages: messageHistory,
-					});
-
-					outputs.push(response);
-
-					const assistantResponse = response.message.content || 'No response.';
-
-					messageHistory.push({
-						role: 'assistant',
-						content: [{ type: 'text', text: assistantResponse as string }],
-					});
-
-					logger(response, `Response to prompt ${index + 1} of ${total}`);
-				} catch (error) {
-					const completionWithError = mapErrorToCompletion(error, model);
-					outputs.push(completionWithError);
 				}
-			}
 
-			return mapToResponse(outputs, model);
-		} catch (error) {}
+				logger(messageHistory);
+
+				const response: Message = await llm.chat({
+					messages: messageHistory,
+				});
+
+				outputs.push(response);
+
+				const assistantResponse = response.message.content || 'No response.';
+
+				messageHistory.push({
+					role: 'assistant',
+					content: [{ type: 'text', text: assistantResponse as string }],
+				});
+
+				logger(response, `Response to prompt ${index + 1} of ${total}`);
+			} catch (error) {
+				const completionWithError = mapErrorToCompletion(error, model);
+				outputs.push(completionWithError);
+			}
+		}
+		return mapToResponse(outputs, model);
 	} catch (error) {
 		console.error('Error in main function:', error);
 		throw error;
