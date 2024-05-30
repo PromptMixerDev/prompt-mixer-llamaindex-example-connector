@@ -7,8 +7,8 @@ const context = await esbuild.context({
 	entryPoints: ['main.ts'],
 	bundle: true,
 	platform: 'node',
-	target: 'es6',
-	outfile: './build/main.js',
+	target: 'es2020',
+	outfile: './dist/main.js',
 });
 
 if (prod) {
