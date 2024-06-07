@@ -8,14 +8,19 @@ import {
 	QueryEngine,
 	RetrieverQueryEngine,
 	MessageContentDetail,
+	Metadata,
+	PapaCSVReader,
+	DocxReader,
+	HTMLReader,
+	MarkdownReader,
+	TextFileReader,
+	PDFReader,
 } from 'llamaindex';
 import fs from 'node:fs';
 import utils from 'node:util';
-import readline from 'node:readline';
+import path from 'node:path';
 
 import { config } from './config';
-
-const ENCODING: BufferEncoding = 'utf-8';
 
 interface Completion {
 	Content: string | null;
@@ -52,7 +57,6 @@ interface ErrorCompletion {
 }
 
 interface DocumentWithIndex {
-	text: string;
 	indexFromDocument: (QueryEngine & RetrieverQueryEngine) | undefined;
 }
 
@@ -112,6 +116,39 @@ async function checkDirectory(path: string): Promise<boolean | undefined> {
 	}
 }
 
+enum Extension {
+	pdf = '.pdf',
+	csv = '.csv',
+	docx = '.docx',
+	html = '.html',
+	md = '.md',
+	txt = '.txt',
+}
+const mapReader = {
+	[Extension.pdf]: new PDFReader(),
+	[Extension.csv]: new PapaCSVReader(),
+	[Extension.docx]: new DocxReader(),
+	[Extension.html]: new HTMLReader(),
+	[Extension.md]: new MarkdownReader(),
+	[Extension.txt]: new TextFileReader(),
+};
+
+async function workWithExtensions(
+	url: string,
+	extension: Extension,
+): Promise<DocumentWithIndex | undefined> {
+	const reader = mapReader[extension];
+
+	const documents = await reader.loadData(url);
+
+	const indexDB = await VectorStoreIndex.fromDocuments(documents);
+
+	return {
+		indexFromDocument: indexDB.asQueryEngine() as unknown as QueryEngine &
+			RetrieverQueryEngine,
+	};
+}
+
 async function workWithFolder(
 	directoryPath: string,
 ): Promise<DocumentWithIndex[] | undefined> {
@@ -121,7 +158,9 @@ async function workWithFolder(
 
 		return Promise.all(
 			documents.map(async (doc) => {
-				const index = await indexFromDocument(doc.text);
+				const document = new Document({ text: doc.text });
+				const index = await indexFromDocument(document);
+
 				return {
 					text: doc.text,
 					indexFromDocument: index,
@@ -133,54 +172,53 @@ async function workWithFolder(
 	}
 }
 
-async function readFileByStreams(url: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		let data = '';
-
-		const readableStream = fs.createReadStream(url, {
-			encoding: ENCODING,
-		});
-
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		readableStream.on('error', (err: any) => {
-			reject(`There was an error reading the file: ${err.message}`);
-		});
-
-		const lineReader = readline.createInterface({ input: readableStream });
-
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		lineReader.on('line', (line: any) => {
-			data += line + '\n';
-		});
-
-		lineReader.on('close', () => {
-			resolve(data);
-		});
-	});
-}
-
-async function getTextFromFile(pathOrUrl: string): Promise<string | undefined> {
+async function readFile(url: string): Promise<string | undefined> {
 	try {
-		return await readFileByStreams(pathOrUrl);
+		return await fs.promises.readFile(url, 'utf-8');
 	} catch (error) {
-		console.error(`Cannot read from ${pathOrUrl}. Error: ${error.message}`);
+		logger(error, `Can't read ${url}`);
 	}
 }
 
+const mapFileByExtensionToParser: {
+	[key in Extension]: (path: string) => Promise<DocumentWithIndex | undefined>;
+} = {
+	[Extension.pdf]: (path) => workWithExtensions(path, Extension.pdf),
+	[Extension.csv]: (path) => workWithExtensions(path, Extension.csv),
+	[Extension.docx]: (path) => workWithExtensions(path, Extension.docx),
+	[Extension.html]: (path) => workWithExtensions(path, Extension.html),
+	[Extension.md]: (path) => workWithExtensions(path, Extension.md),
+	[Extension.txt]: (path) => workWithExtensions(path, Extension.txt),
+};
+
 async function workWithFile(
-	pathOrUrl: string,
+	filePath: string,
 ): Promise<DocumentWithIndex | undefined> {
 	try {
-		const text = (await getTextFromFile(pathOrUrl)) as string;
+		const ext = path.extname(filePath);
 
-		const index = await indexFromDocument(text);
+		const unknownExtension = async (
+			path: string,
+		): Promise<DocumentWithIndex | undefined> => {
+			const text = (await readFile(path)) as string;
+			const document = new Document({ text });
+			const indexDB = await VectorStoreIndex.fromDocuments([document]);
+			const index = indexDB.asQueryEngine() as unknown as QueryEngine &
+				RetrieverQueryEngine;
 
-		return {
-			text,
-			indexFromDocument: index as unknown as QueryEngine & RetrieverQueryEngine,
+			return {
+				indexFromDocument: index as unknown as QueryEngine &
+					RetrieverQueryEngine,
+			};
 		};
+
+		const supportExtensions = Object.values(Extension) as string[];
+
+		return supportExtensions.includes(ext)
+			? mapFileByExtensionToParser[ext as Extension](filePath)
+			: unknownExtension(filePath);
 	} catch (error) {
-		logger(error);
+		logger(error, 'workWithFile function');
 	}
 }
 
@@ -194,14 +232,14 @@ async function parseDocument(
 		if (isADirectory) return await workWithFolder(path);
 		else return await workWithFile(path);
 	} catch (error) {
-		console.log(error);
+		logger(error, 'Parse document');
 	}
 }
 
 function extractDocumentUrls(prompt: string): string[] {
 	const urlRegex =
 		/(https?:\/\/[^\s]+|[a-zA-Z]:\\[^:<>"|?\n]*|\/[^:<>"|?\n]*)/g;
-	const urls = prompt.match(urlRegex) || [];
+	const urls = prompt.trim().match(urlRegex) || [];
 
 	return urls.filter((url) => {
 		const extensionIndex = url.lastIndexOf('.');
@@ -215,15 +253,14 @@ function extractDocumentUrls(prompt: string): string[] {
 }
 
 async function indexFromDocument(
-	text: string,
+	doc: Document<Metadata>,
 ): Promise<(QueryEngine & RetrieverQueryEngine) | undefined> {
 	try {
-		const document = new Document({ text });
-		const indexDB = await VectorStoreIndex.fromDocuments([document]);
+		const indexDB = await VectorStoreIndex.fromDocuments([doc]);
 		return indexDB.asQueryEngine() as unknown as QueryEngine &
 			RetrieverQueryEngine;
 	} catch (error) {
-		console.log(error);
+		logger(error);
 	}
 }
 
@@ -233,18 +270,13 @@ const updateHistory = async (
 	document: DocumentWithIndex | undefined,
 	userPrompt: string,
 ) => {
-	messageContent.push({
-		type: 'text',
-		text: document?.text as string,
-	});
-
 	messageHistory.push({
 		role: 'user',
 		content: messageContent,
 	});
 
 	const results = await document?.indexFromDocument?.query({
-		query: userPrompt,
+		query: removePathsInPrompt(userPrompt),
 	});
 
 	messageHistory.push({
@@ -252,6 +284,19 @@ const updateHistory = async (
 		content: results?.response as string,
 	});
 };
+
+// openai can't read
+function removePathsInPrompt(prompt: string) {
+	return prompt
+		.split(' ')
+		.map((word: string) => {
+			// This regular expression checks if 'word' could be a URL or file path
+			if (!/(\.|\w+:\/)/.test(word)) {
+				return word;
+			}
+		})
+		.join(' ');
+}
 
 async function main(
 	model: string,
@@ -280,7 +325,7 @@ async function main(
 				const userPrompt = prompts[index];
 				const docUrls = extractDocumentUrls(userPrompt);
 				const messageContent: ChatMessage['content'] = [
-					{ type: 'text', text: userPrompt },
+					{ type: 'text', text: removePathsInPrompt(userPrompt) },
 				];
 
 				for await (const docUrl of docUrls) {
