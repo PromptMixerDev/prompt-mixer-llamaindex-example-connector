@@ -1,5 +1,5 @@
 export const config = {
-	connectorName: 'LlamaIndexDocuments',
+	connectorName: 'Llamaindex Connector',
 	models: [
 		'gpt-4o',
 		'gpt-4o-2024-05-13',
