@@ -1,7 +1,7 @@
 {
-	"name": "prompt-mixer-sample-connector",
+	"name": "prompt-mixer-llamaindex-example-connector",
 	"version": "1.0.2",
-	"description": "",
+	"description": "Llamaindex Connector",
 	"type": "module",
 	"main": "main.js",
 	"scripts": {
