@@ -15,6 +15,9 @@ import {
 	MarkdownReader,
 	TextFileReader,
 	PDFReader,
+	OpenAIEmbedding,
+	OpenAISession,
+	Settings,
 } from 'llamaindex';
 import fs from 'node:fs';
 import utils from 'node:util';
@@ -313,20 +316,32 @@ async function main(
 	];
 	const outputs: Array<Message | ErrorCompletion> = [];
 
+	const embedModel = new OpenAIEmbedding({
+		model: 'text-embedding-3-small',
+		apiKey: settings?.['API_KEY'] as string,
+		session: new OpenAISession({
+			apiKey: settings?.['API_KEY'] as string,
+		}),
+	});
+	Settings.embedModel = embedModel;
+
 	const llm = new OpenAI({
 		model,
-		additionalChatOptions: { ...restProperties },
 		apiKey: settings?.['API_KEY'] as string,
+		session: new OpenAISession({
+			apiKey: settings?.['API_KEY'] as string,
+		}),
+		additionalChatOptions: restProperties,
 	});
+
+	Settings.llm = llm;
 
 	try {
 		for (let index = 0; index < total; index++) {
 			try {
 				const userPrompt = prompts[index];
 				const docUrls = extractDocumentUrls(userPrompt);
-				const messageContent: ChatMessage['content'] = [
-					{ type: 'text', text: removePathsInPrompt(userPrompt) },
-				];
+				const messageContent: ChatMessage['content'] = [];
 
 				for await (const docUrl of docUrls) {
 					try {
@@ -352,6 +367,11 @@ async function main(
 						console.log(error);
 					}
 				}
+
+				messageHistory.push({
+					role: 'user',
+					content: removePathsInPrompt(userPrompt),
+				});
 
 				logger(messageHistory);
 
