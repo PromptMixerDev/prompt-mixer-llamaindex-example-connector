@@ -28,7 +28,7 @@
 	"devDependencies": {
 		"@types/node": "^16.18.97",
 		"@typescript-eslint/eslint-plugin": "^7.11.0",
-		"@typescript-eslint/parser": "^7.11.0",
+		"@typescript-eslint/parser": "^7.18.0",
 		"builtin-modules": "3.3.0",
 		"esbuild": "0.17.3",
 		"eslint": "^8.56.0",
