@@ -40,6 +40,6 @@
 		"typescript": "^5.7.3"
 	},
 	"dependencies": {
-		"llamaindex": "^0.8.31"
+		"llamaindex": "^0.10.5"
 	}
 }
